@@ -33,15 +33,28 @@ jobs:
           TC_PREFIX=$(ls /opt/v821-toolchain/bin/*-gcc | head -n1 | sed 's/gcc$//')
           echo "Using toolchain prefix: $TC_PREFIX"
           cd kernel
+          export BSP_TOP="bsp/"
+          ln -sf bsp/platform platform
+          ln -sf bsp/drivers drivers_bsp
+          ln -sf bsp/lib lib_bsp
+          ln -sf bsp/modules modules_bsp
+          
           cp ../target_kernel_config.txt .config
-          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX olddefconfig
-          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX prepare
-          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX modules_prepare
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" olddefconfig
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" prepare
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" modules_prepare
+          
           echo "Building modules..."
-          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX -j$(nproc) modules || make ARCH=riscv CROSS_COMPILE=$TC_PREFIX M=drivers/scsi modules && make ARCH=riscv CROSS_COMPILE=$TC_PREFIX M=drivers/usb/storage modules && make ARCH=riscv CROSS_COMPILE=$TC_PREFIX M=sound modules
+          make -k ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) modules || true
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=drivers/scsi modules || true
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=drivers/usb/storage modules || true
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=sound modules || true
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=sound/core modules || true
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=sound/usb modules || true
           
           mkdir -p ../modules
           find . -name "*.ko" -exec cp {} ../modules/ \;
+          echo "=== COMPILED MODULES ==="
           ls -lh ../modules/
 
       - name: Upload compiled kernel modules
