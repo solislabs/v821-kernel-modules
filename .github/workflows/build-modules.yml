@@ -14,7 +14,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y make bc bison flex libssl-dev libelf-dev xz-utils wget gcc
+          sudo apt-get install -y make bc bison flex libssl-dev libelf-dev xz-utils wget gcc python3
 
       - name: Download AvaotaSBC Official V821 Toolchain
         run: |
@@ -44,7 +44,7 @@ jobs:
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" prepare
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" modules_prepare
           
-          echo "Building modules..."
+          echo "Building kernel modules..."
           make -k ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) modules || true
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=drivers/scsi modules || true
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=drivers/usb/storage modules || true
@@ -52,8 +52,27 @@ jobs:
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=sound/core modules || true
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=sound/usb modules || true
           
+          echo "Building v821_compat module..."
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -C "$PWD" M="$GITHUB_WORKSPACE/v821_compat" modules
+          
           mkdir -p ../modules
-          find . -name "*.ko" -exec cp {} ../modules/ \;
+          find . "$GITHUB_WORKSPACE/v821_compat" -name "*.ko" -exec cp {} ../modules/ \;
+          
+          echo "Patching vermagic to match stock 5.4.220..."
+          python3 -c "
+          import os
+          d = '../modules'
+          for f in os.listdir(d):
+              if f.endswith('.ko'):
+                  p = os.path.join(d, f)
+                  data = open(p, 'rb').read()
+                  old = b'vermagic=5.4.220+ preempt mod_unload riscv'
+                  new = b'vermagic=5.4.220 preempt mod_unload riscv\x00'
+                  if old in data:
+                      open(p, 'wb').write(data.replace(old, new))
+                      print('Patched:', f)
+          "
+          
           echo "=== COMPILED MODULES ==="
           ls -lh ../modules/
 
