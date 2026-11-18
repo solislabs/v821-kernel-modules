@@ -84,9 +84,10 @@ jobs:
           echo "Cloning official tinyalsa..."
           git clone --depth 1 https://github.com/tinyalsa/tinyalsa.git tinyalsa_repo
           echo "Compiling v821_dap..."
+          rm -rf "$GITHUB_WORKSPACE/dap_player/tinyalsa"
           ${TC_PREFIX}gcc -O2 \
-            -I"$GITHUB_WORKSPACE/dap_player" \
             -I"$GITHUB_WORKSPACE/tinyalsa_repo/include" \
+            -I"$GITHUB_WORKSPACE/dap_player" \
             "$GITHUB_WORKSPACE/dap_player/dap_player.c" \
             "$GITHUB_WORKSPACE/tinyalsa_repo/src/pcm.c" \
             "$GITHUB_WORKSPACE/tinyalsa_repo/src/pcm_hw.c" \
