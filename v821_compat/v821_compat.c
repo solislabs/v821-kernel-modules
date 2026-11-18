@@ -43,6 +43,7 @@ static int __init v821_compat_init(void)
         pr_err("v821_compat: failed to init sg_pool: %d\n", ret);
         return ret;
     }
+    blk_scsi_ioctl_init();
     pr_info("v821_compat: loaded successfully (pa_msb, scsi_common, sg_pool, scsi_ioctl)\n");
     return 0;
 }
