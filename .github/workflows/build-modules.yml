@@ -14,12 +14,12 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y make bc bison flex libssl-dev libelf-dev xz-utils wget gcc python3 git
+          sudo apt-get install -y make bc bison flex libssl-dev libelf-dev xz-utils curl wget gcc python3 git
 
       - name: Download AvaotaSBC Official V821 Toolchain
         run: |
           echo "Downloading official toolchain..."
-          wget -q https://github.com/AvaotaSBC/toolchains/releases/download/v821-toolchains/nds32le-linux-musl-v5d.tar.xz
+          curl -fSL --retry 5 https://github.com/AvaotaSBC/toolchains/releases/download/v821-toolchains/nds32le-linux-musl-v5d.tar.xz -o nds32le-linux-musl-v5d.tar.xz
           sudo mkdir -p /opt/v821-toolchain
           sudo tar -xf nds32le-linux-musl-v5d.tar.xz -C /opt/v821-toolchain --strip-components=1
           ls -la /opt/v821-toolchain/bin/
@@ -56,7 +56,7 @@ jobs:
           echo "Preparing v821_compat sources..."
           cp drivers/scsi/scsi_common.c "$GITHUB_WORKSPACE/v821_compat/scsi_common_impl.c"
           sed -e 's/module_init(.*);//' -e 's/module_exit(.*);//' lib/sg_pool.c > "$GITHUB_WORKSPACE/v821_compat/sg_pool_impl.c"
-          sed -e 's/subsys_initcall(.*);//' -e 's/static int __init blk_scsi_ioctl_init/static int __maybe_unused blk_scsi_ioctl_init/' block/scsi_ioctl.c > "$GITHUB_WORKSPACE/v821_compat/scsi_ioctl_impl.c"
+          sed -e 's/.*initcall(.*);//' -e 's/static int __init blk_scsi_ioctl_init/static int blk_scsi_ioctl_init/' block/scsi_ioctl.c > "$GITHUB_WORKSPACE/v821_compat/scsi_ioctl_impl.c"
           
           echo "Building v821_compat module..."
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -C "$PWD" M="$GITHUB_WORKSPACE/v821_compat" modules
