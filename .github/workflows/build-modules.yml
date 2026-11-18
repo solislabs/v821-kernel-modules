@@ -1,4 +1,4 @@
-name: Build V821 Kernel Modules
+name: Build V821 Kernel Modules and DAP Player
 
 on:
   push:
@@ -72,12 +72,20 @@ jobs:
                       open(p, 'wb').write(data.replace(old, new))
                       print('Patched:', f)
           "
-          
-          echo "=== COMPILED MODULES ==="
-          ls -lh ../modules/
 
-      - name: Upload compiled kernel modules
+      - name: Build v821_dap Standalone Player
+        run: |
+          TC_PREFIX=$(ls /opt/v821-toolchain/bin/*-gcc | head -n1 | sed 's/gcc$//')
+          echo "Compiling v821_dap..."
+          ${TC_PREFIX}gcc -O2 -I"$GITHUB_WORKSPACE/dap_player" "$GITHUB_WORKSPACE/dap_player/dap_player.c" "$GITHUB_WORKSPACE/dap_player/pcm.c" -o modules/v821_dap -lpthread -lm
+          ${TC_PREFIX}strip modules/v821_dap
+          echo "=== COMPILED ARTIFACTS ==="
+          ls -lh modules/
+
+      - name: Upload compiled kernel modules and player
         uses: actions/upload-artifact@v4
         with:
-          name: v821-audio-storage-modules
-          path: modules/*.ko
+          name: v821-audio-dap-bundle
+          path: |
+            modules/*.ko
+            modules/v821_dap
