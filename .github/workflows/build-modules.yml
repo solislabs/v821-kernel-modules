@@ -1,0 +1,51 @@
+name: Build V821 Kernel Modules
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make bc bison flex libssl-dev libelf-dev xz-utils wget gcc
+
+      - name: Download AvaotaSBC Official V821 Toolchain
+        run: |
+          echo "Downloading official toolchain..."
+          wget -q https://github.com/AvaotaSBC/toolchains/releases/download/v821-toolchains/nds32le-linux-musl-v5d.tar.xz
+          sudo mkdir -p /opt/v821-toolchain
+          sudo tar -xf nds32le-linux-musl-v5d.tar.xz -C /opt/v821-toolchain --strip-components=1
+          ls -la /opt/v821-toolchain/bin/
+
+      - name: Clone AvaotaSBC V821 Linux Kernel
+        run: |
+          git clone --depth 1 --branch v821-avaota-f1 https://github.com/AvaotaSBC/linux-v8xx.git kernel
+
+      - name: Build Kernel Modules
+        run: |
+          TC_PREFIX=$(ls /opt/v821-toolchain/bin/*-gcc | head -n1 | sed 's/gcc$//')
+          echo "Using toolchain prefix: $TC_PREFIX"
+          cd kernel
+          cp ../target_kernel_config.txt .config
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX olddefconfig
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX prepare
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX modules_prepare
+          echo "Building modules..."
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX -j$(nproc) modules || make ARCH=riscv CROSS_COMPILE=$TC_PREFIX M=drivers/scsi modules && make ARCH=riscv CROSS_COMPILE=$TC_PREFIX M=drivers/usb/storage modules && make ARCH=riscv CROSS_COMPILE=$TC_PREFIX M=sound modules
+          
+          mkdir -p ../modules
+          find . -name "*.ko" -exec cp {} ../modules/ \;
+          ls -lh ../modules/
+
+      - name: Upload compiled kernel modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: v821-audio-storage-modules
+          path: modules/*.ko
