@@ -6,6 +6,7 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -24,6 +25,8 @@
 #include <tinyalsa/pcm.h>
 
 #define PORT 8888
+#define DAC_RATE 48000
+#define DAC_CHANNELS 2
 #define BUFFER_FRAMES 1024
 #define MAX_TRACKS 1024
 #define MAX_PATH 512
@@ -82,19 +85,19 @@ void scan_directory(const char *dir_path) {
     if (!d) return;
     struct dirent *dir;
     while ((dir = readdir(d)) != NULL) {
-        if (dir->d_type == DT_DIR) {
-            if (strcmp(dir->d_name, ".") != 0 && strcmp(dir->d_name, "..") != 0) {
-                char sub_path[MAX_PATH];
-                snprintf(sub_path, sizeof(sub_path), "%s/%s", dir_path, dir->d_name);
-                scan_directory(sub_path);
-            }
-        } else if (dir->d_type == DT_REG) {
-            const char *ext = strrchr(dir->d_name, '.');
-            if (ext) {
-                if (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".mp3") == 0) {
-                    char full_path[MAX_PATH];
-                    snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, dir->d_name);
-                    playlist_add(full_path);
+        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
+        char full_path[MAX_PATH];
+        snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, dir->d_name);
+        struct stat st;
+        if (stat(full_path, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                scan_directory(full_path);
+            } else if (S_ISREG(st.st_mode)) {
+                const char *ext = strrchr(dir->d_name, '.');
+                if (ext) {
+                    if (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".mp3") == 0) {
+                        playlist_add(full_path);
+                    }
                 }
             }
         }
@@ -122,7 +125,6 @@ int get_prev_index() {
 void apply_tape_stop_and_volume(int16_t *buf, int frames, int channels, double speed, int volume) {
     float vol = (float)volume / 100.0f;
     for (int i = 0; i < frames; i++) {
-        // speed attenuation
         float factor = vol * (float)(speed * speed);
         for (int c = 0; c < channels; c++) {
             float s = (float)buf[i * channels + c] * factor;
@@ -136,22 +138,25 @@ void apply_tape_stop_and_volume(int16_t *buf, int frames, int channels, double s
 void *audio_playback_thread(void *arg) {
     struct pcm_config config;
     memset(&config, 0, sizeof(config));
-    config.channels = 2;
-    config.rate = 44100;
-    config.period_size = 1024;
+    config.channels = DAC_CHANNELS;
+    config.rate = DAC_RATE;
+    config.period_size = BUFFER_FRAMES;
     config.period_count = 4;
     config.format = PCM_FORMAT_S16_LE;
 
-    struct pcm *pcm = NULL;
-    int16_t sample_buffer[BUFFER_FRAMES * 2];
+    struct pcm *pcm = pcm_open(0, 0, PCM_OUT, &config);
+    if (!pcm || !pcm_is_ready(pcm)) {
+        printf("[DAP] Failed to open PCM DAC card 0 device 0: %s\n", pcm ? pcm_get_error(pcm) : "null");
+        if (pcm) pcm_close(pcm);
+        pcm = NULL;
+    }
+
+    int16_t in_buffer[BUFFER_FRAMES * 8];
+    int16_t dac_buffer[BUFFER_FRAMES * DAC_CHANNELS];
 
     while (1) {
         pthread_mutex_lock(&ctx.lock);
         while (ctx.state != STATE_PLAYING || ctx.current_index < 0 || ctx.current_index >= ctx.count) {
-            if (pcm) {
-                pcm_close(pcm);
-                pcm = NULL;
-            }
             pthread_cond_wait(&ctx.cond, &ctx.lock);
         }
 
@@ -222,21 +227,8 @@ void *audio_playback_thread(void *arg) {
         ctx.current_pos_frames = 0;
         pthread_mutex_unlock(&ctx.lock);
 
-        // Open PCM if rate/channels changed
-        if (!pcm || config.rate != srate || config.channels != ch) {
-            if (pcm) pcm_close(pcm);
-            config.channels = ch;
-            config.rate = srate;
-            config.format = PCM_FORMAT_S16_LE;
-            config.period_size = 1024;
-            config.period_count = 4;
+        if (!pcm) {
             pcm = pcm_open(0, 0, PCM_OUT, &config);
-            if (!pcm || !pcm_is_ready(pcm)) {
-                printf("[DAP] Failed to open PCM card 0 device 0: %s\n", pcm ? pcm_get_error(pcm) : "null");
-                if (pcm) { pcm_close(pcm); pcm = NULL; }
-                sleep(1);
-                continue;
-            }
         }
 
         int playing = 1;
@@ -259,7 +251,7 @@ void *audio_playback_thread(void *arg) {
             int vol = ctx.volume;
             pthread_mutex_unlock(&ctx.lock);
 
-            // Spin-up logic (quadratic speed increase 0.1 -> 1.0)
+            // Spin-up logic (0.1 -> 1.0)
             if (spin_up) {
                 speed += 0.08;
                 if (speed >= 1.0) {
@@ -275,7 +267,7 @@ void *audio_playback_thread(void *arg) {
                 }
             }
 
-            // Tape-stop logic (quadratic deceleration 1.0 -> 0.0)
+            // Tape-stop logic (1.0 -> 0.0)
             if (tape_stop) {
                 speed -= 0.06;
                 if (speed <= 0.02) {
@@ -283,7 +275,6 @@ void *audio_playback_thread(void *arg) {
                     pthread_mutex_lock(&ctx.lock);
                     ctx.tape_stop_requested = 0;
                     ctx.tape_speed = 0.0;
-                    // Switch to target or next
                     ctx.current_index = get_next_index();
                     pthread_mutex_unlock(&ctx.lock);
                     playing = 0;
@@ -295,19 +286,23 @@ void *audio_playback_thread(void *arg) {
                 }
             }
 
-            // Read frames
+            // Calculate input frames needed for 1024 output frames
+            double ratio = (double)srate / (double)DAC_RATE;
+            int in_needed = (int)(BUFFER_FRAMES * ratio) + 2;
+            if (in_needed > (BUFFER_FRAMES * 4)) in_needed = BUFFER_FRAMES * 4;
+
             uint64_t frames_read = 0;
             if (flac) {
-                frames_read = drflac_read_pcm_frames_s16(flac, BUFFER_FRAMES, sample_buffer);
+                frames_read = drflac_read_pcm_frames_s16(flac, in_needed, in_buffer);
             } else if (is_wav) {
-                frames_read = drwav_read_pcm_frames_s16(&wav, BUFFER_FRAMES, sample_buffer);
+                frames_read = drwav_read_pcm_frames_s16(&wav, in_needed, in_buffer);
             } else if (is_mp3) {
-                size_t samples_read = mp3dec_ex_read(&mp3, sample_buffer, BUFFER_FRAMES * ch);
+                size_t samples_read = mp3dec_ex_read(&mp3, in_buffer, in_needed * ch);
                 frames_read = samples_read / ch;
             }
 
             if (frames_read == 0) {
-                // Track finished! Auto advance
+                // Auto-advance
                 pthread_mutex_lock(&ctx.lock);
                 ctx.current_index = get_next_index();
                 pthread_mutex_unlock(&ctx.lock);
@@ -315,12 +310,37 @@ void *audio_playback_thread(void *arg) {
                 break;
             }
 
-            // Apply Tape-stop & Volume
-            apply_tape_stop_and_volume(sample_buffer, frames_read, ch, speed, vol);
+            // Resample / format to 48000 Hz Stereo
+            for (int j = 0; j < BUFFER_FRAMES; j++) {
+                double src_pos = (double)j * ratio;
+                int idx0 = (int)src_pos;
+                int idx1 = idx0 + 1;
+                if (idx0 >= (int)frames_read) idx0 = (int)frames_read - 1;
+                if (idx1 >= (int)frames_read) idx1 = idx0;
+                double frac = src_pos - (double)idx0;
 
-            // Write to ALSA
+                if (ch == 1) {
+                    int16_t s0 = in_buffer[idx0];
+                    int16_t s1 = in_buffer[idx1];
+                    int16_t val = (int16_t)(s0 + (s1 - s0) * frac);
+                    dac_buffer[j * 2 + 0] = val;
+                    dac_buffer[j * 2 + 1] = val;
+                } else {
+                    int16_t l0 = in_buffer[idx0 * ch + 0];
+                    int16_t l1 = in_buffer[idx1 * ch + 0];
+                    int16_t r0 = in_buffer[idx0 * ch + 1];
+                    int16_t r1 = in_buffer[idx1 * ch + 1];
+                    dac_buffer[j * 2 + 0] = (int16_t)(l0 + (l1 - l0) * frac);
+                    dac_buffer[j * 2 + 1] = (int16_t)(r0 + (r1 - r0) * frac);
+                }
+            }
+
+            // Apply Tape-stop & Volume
+            apply_tape_stop_and_volume(dac_buffer, BUFFER_FRAMES, DAC_CHANNELS, speed, vol);
+
+            // Write to ALSA DAC
             if (pcm) {
-                int err = pcm_writei(pcm, sample_buffer, frames_read);
+                int err = pcm_writei(pcm, dac_buffer, BUFFER_FRAMES);
                 if (err < 0) {
                     pcm_prepare(pcm);
                 }
@@ -340,7 +360,6 @@ void *audio_playback_thread(void *arg) {
     return NULL;
 }
 
-// TCP Wi-Fi Remote Control Server
 void *tcp_server_thread(void *arg) {
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) return NULL;
@@ -370,7 +389,6 @@ void *tcp_server_thread(void *arg) {
         ssize_t n = read(client, buf, sizeof(buf) - 1);
         if (n > 0) {
             buf[n] = '\0';
-            // Trim newline
             while (n > 0 && (buf[n - 1] == '\r' || buf[n - 1] == '\n')) {
                 buf[--n] = '\0';
             }
@@ -399,7 +417,7 @@ void *tcp_server_thread(void *arg) {
                 snprintf(resp, sizeof(resp), "{\"status\": \"%s\"}\n", ctx.state == STATE_PLAYING ? "playing" : "paused");
             } else if (strncmp(buf, "NEXT", 4) == 0) {
                 pthread_mutex_lock(&ctx.lock);
-                ctx.tape_stop_requested = 1; // trigger smooth tape-stop down, then auto advances!
+                ctx.tape_stop_requested = 1;
                 pthread_mutex_unlock(&ctx.lock);
                 snprintf(resp, sizeof(resp), "{\"status\": \"next_tape_stop\"}\n");
             } else if (strncmp(buf, "PREV", 4) == 0) {
@@ -421,14 +439,15 @@ void *tcp_server_thread(void *arg) {
                 ctx.volume = v;
                 pthread_mutex_unlock(&ctx.lock);
                 snprintf(resp, sizeof(resp), "{\"volume\": %d}\n", v);
-            } else if (strncmp(buf, "SCAN ", 5) == 0) {
-                const char *path = buf + 5;
-                scan_directory(path);
+            } else if (strncmp(buf, "SCAN", 4) == 0) {
+                scan_directory("/mnt/exUDISK");
+                scan_directory("/mnt/UDISK");
+                scan_directory("/tmp");
                 pthread_mutex_lock(&ctx.lock);
                 if (ctx.current_index == -1 && ctx.count > 0) {
                     ctx.current_index = 0;
                 }
-                snprintf(resp, sizeof(resp), "{\"scanned\": %d, \"total_tracks\": %d}\n", ctx.count, ctx.count);
+                snprintf(resp, sizeof(resp), "{\"total_tracks\": %d}\n", ctx.count);
                 pthread_mutex_unlock(&ctx.lock);
             } else if (strncmp(buf, "STATUS", 6) == 0) {
                 pthread_mutex_lock(&ctx.lock);
@@ -452,6 +471,9 @@ void *tcp_server_thread(void *arg) {
 }
 
 int main(int argc, char **argv) {
+    signal(SIGPIPE, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+
     printf("=== Allwinner V821 Autonomous Hi-Fi DAP Engine ===\n");
     memset(&ctx, 0, sizeof(ctx));
     ctx.current_index = -1;
@@ -464,6 +486,12 @@ int main(int argc, char **argv) {
     scan_directory("/mnt/exUDISK");
     scan_directory("/mnt/UDISK");
     scan_directory("/tmp");
+
+    if (argc > 1) {
+        for (int i = 1; i < argc; i++) {
+            playlist_add(argv[i]);
+        }
+    }
 
     if (ctx.count > 0) {
         ctx.current_index = 0;
