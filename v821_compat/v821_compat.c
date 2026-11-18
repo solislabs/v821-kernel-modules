@@ -5,9 +5,19 @@
 #include <linux/scatterlist.h>
 #include <linux/mempool.h>
 #include <linux/slab.h>
+#include <linux/blkdev.h>
+#include <linux/capability.h>
+#include <linux/completion.h>
+#include <linux/cdrom.h>
+#include <linux/ratelimit.h>
+#include <linux/uio.h>
+#include <linux/uaccess.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_proto.h>
 #include <scsi/scsi_common.h>
+#include <scsi/scsi_ioctl.h>
+#include <scsi/scsi_cmnd.h>
+#include <scsi/sg.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Antigravity");
@@ -17,18 +27,14 @@ MODULE_DESCRIPTION("Compatibility symbols for Allwinner V821 Audio/Storage");
 phys_addr_t pa_msb = 0;
 EXPORT_SYMBOL(pa_msb);
 
-/* SCSI command size table (from block/scsi_ioctl.c) */
-const unsigned char scsi_command_size_tbl[8] = {
-	6, 10, 10, 12,
-	16, 12, 10, 10
-};
-EXPORT_SYMBOL(scsi_command_size_tbl);
-
 /* Include scsi_common implementations */
 #include "scsi_common_impl.c"
 
 /* Include sg_pool implementations */
 #include "sg_pool_impl.c"
+
+/* Include scsi_ioctl implementations */
+#include "scsi_ioctl_impl.c"
 
 static int __init v821_compat_init(void)
 {
@@ -37,7 +43,7 @@ static int __init v821_compat_init(void)
         pr_err("v821_compat: failed to init sg_pool: %d\n", ret);
         return ret;
     }
-    pr_info("v821_compat: loaded successfully (pa_msb, scsi_common, sg_pool, scsi_cmd_size)\n");
+    pr_info("v821_compat: loaded successfully (pa_msb, scsi_common, sg_pool, scsi_ioctl)\n");
     return 0;
 }
 
