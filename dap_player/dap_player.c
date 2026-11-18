@@ -21,7 +21,7 @@
 #define MINIMP3_IMPLEMENTATION
 #include "minimp3_ex.h"
 
-#include "tinyalsa/asoundlib.h"
+#include <tinyalsa/pcm.h>
 
 #define PORT 8888
 #define BUFFER_FRAMES 1024
