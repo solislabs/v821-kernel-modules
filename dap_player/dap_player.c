@@ -105,6 +105,47 @@ void scan_directory(const char *dir_path) {
     closedir(d);
 }
 
+void init_hardware_and_storage() {
+    system("mount -o remount,rw,exec /mnt/UDISK 2>/dev/null");
+    system("echo usb_host > /sys/devices/platform/soc@2002000/soc@2002000:usbc0@0/otg_role 2>/dev/null");
+    system("cat /sys/devices/platform/soc@2002000/soc@2002000:usbc0@0/usb_host >/dev/null 2>&1");
+
+    system("insmod /etc/v821_compat.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/v821_compat.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/soundcore.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/snd.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/snd-timer.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/snd-pcm.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/snd-hwdep.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/snd-rawmidi.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/snd-usbmidi-lib.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/snd-usb-audio.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/scsi_mod.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/sd_mod.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/sg.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/usb-storage.ko 2>/dev/null");
+
+    system("insmod /tmp/modules/soundcore.ko 2>/dev/null");
+    system("insmod /tmp/modules/snd.ko 2>/dev/null");
+    system("insmod /tmp/modules/snd-timer.ko 2>/dev/null");
+    system("insmod /tmp/modules/snd-pcm.ko 2>/dev/null");
+    system("insmod /tmp/modules/snd-hwdep.ko 2>/dev/null");
+    system("insmod /tmp/modules/snd-rawmidi.ko 2>/dev/null");
+    system("insmod /tmp/modules/snd-usbmidi-lib.ko 2>/dev/null");
+    system("insmod /tmp/modules/snd-usb-audio.ko 2>/dev/null");
+    system("insmod /tmp/modules/scsi_mod.ko 2>/dev/null");
+    system("insmod /tmp/modules/sd_mod.ko 2>/dev/null");
+    system("insmod /tmp/modules/sg.ko 2>/dev/null");
+    system("insmod /tmp/modules/usb-storage.ko 2>/dev/null");
+
+    system("mkdir -p /mnt/exUDISK");
+    for (int i = 0; i < 5; i++) {
+        if (access("/dev/sda1", F_OK) == 0 || access("/dev/sda", F_OK) == 0) break;
+        usleep(400000);
+    }
+    system("mount -t vfat /dev/sda1 /mnt/exUDISK 2>/dev/null || mount /dev/sda1 /mnt/exUDISK 2>/dev/null || mount /dev/sda /mnt/exUDISK 2>/dev/null");
+}
+
 int get_next_index() {
     if (ctx.count == 0) return -1;
     if (ctx.shuffle) {
@@ -440,15 +481,33 @@ void *tcp_server_thread(void *arg) {
                 pthread_mutex_unlock(&ctx.lock);
                 snprintf(resp, sizeof(resp), "{\"volume\": %d}\n", v);
             } else if (strncmp(buf, "SCAN", 4) == 0) {
+                init_hardware_and_storage();
+                playlist_clear();
                 scan_directory("/mnt/exUDISK");
                 scan_directory("/mnt/UDISK");
                 scan_directory("/tmp");
                 pthread_mutex_lock(&ctx.lock);
-                if (ctx.current_index == -1 && ctx.count > 0) {
+                if (ctx.count > 0) {
                     ctx.current_index = 0;
                 }
                 snprintf(resp, sizeof(resp), "{\"total_tracks\": %d}\n", ctx.count);
                 pthread_mutex_unlock(&ctx.lock);
+            } else if (strncmp(buf, "EXEC ", 5) == 0) {
+                const char *cmd = buf + 5;
+                char exec_buf[16384];
+                char full_cmd[1024];
+                snprintf(full_cmd, sizeof(full_cmd), "( %s ) 2>&1", cmd);
+                FILE *fp = popen(full_cmd, "r");
+                if (fp) {
+                    size_t bytes = fread(exec_buf, 1, sizeof(exec_buf) - 1, fp);
+                    exec_buf[bytes] = '\0';
+                    pclose(fp);
+                    write(client, exec_buf, bytes);
+                    close(client);
+                    continue;
+                } else {
+                    snprintf(resp, sizeof(resp), "ERROR: popen failed\n");
+                }
             } else if (strncmp(buf, "STATUS", 6) == 0) {
                 pthread_mutex_lock(&ctx.lock);
                 const char *st = (ctx.state == STATE_PLAYING) ? "playing" : (ctx.state == STATE_PAUSED) ? "paused" : "stopped";
@@ -481,6 +540,9 @@ int main(int argc, char **argv) {
     ctx.tape_speed = 1.0;
     pthread_mutex_init(&ctx.lock, NULL);
     pthread_cond_init(&ctx.cond, NULL);
+
+    // Initialize hardware drivers & storage
+    init_hardware_and_storage();
 
     // Initial scan of internal and external storage
     scan_directory("/mnt/exUDISK");
