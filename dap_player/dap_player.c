@@ -99,10 +99,8 @@ void scan_directory(const char *dir_path) {
             }
         }
 
-        // Check if directory by attempting opendir to bypass 32-bit stat() limitations
-        DIR *subdir = opendir(full_path);
-        if (subdir) {
-            closedir(subdir);
+        struct stat st;
+        if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
             scan_directory(full_path);
         }
     }
@@ -489,7 +487,6 @@ void *tcp_server_thread(void *arg) {
                 playlist_clear();
                 scan_directory("/mnt/exUDISK");
                 scan_directory("/mnt/UDISK");
-                scan_directory("/tmp");
                 pthread_mutex_lock(&ctx.lock);
                 if (ctx.count > 0) {
                     ctx.current_index = 0;
@@ -545,13 +542,16 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&ctx.lock, NULL);
     pthread_cond_init(&ctx.cond, NULL);
 
+    pthread_t th_audio, th_tcp;
+    pthread_create(&th_tcp, NULL, tcp_server_thread, NULL);
+    pthread_create(&th_audio, NULL, audio_playback_thread, NULL);
+
     // Initialize hardware drivers & storage
     init_hardware_and_storage();
 
     // Initial scan of internal and external storage
     scan_directory("/mnt/exUDISK");
     scan_directory("/mnt/UDISK");
-    scan_directory("/tmp");
 
     if (argc > 1) {
         for (int i = 1; i < argc; i++) {
@@ -563,10 +563,6 @@ int main(int argc, char **argv) {
         ctx.current_index = 0;
         printf("[DAP] Found %d tracks in storage.\n", ctx.count);
     }
-
-    pthread_t th_audio, th_tcp;
-    pthread_create(&th_audio, NULL, audio_playback_thread, NULL);
-    pthread_create(&th_tcp, NULL, tcp_server_thread, NULL);
 
     pthread_join(th_audio, NULL);
     pthread_join(th_tcp, NULL);
