@@ -93,9 +93,20 @@ void playlist_add(const char *path) {
     pthread_mutex_unlock(&ctx.lock);
 }
 
+static int get_leading_num(const char *s) {
+    while (*s && (*s < '0' || *s > '9')) s++;
+    if (*s >= '0' && *s <= '9') return atoi(s);
+    return -1;
+}
+
 static int track_cmp(const void *a, const void *b) {
     const Track *ta = (const Track *)a;
     const Track *tb = (const Track *)b;
+    int na = get_leading_num(ta->filename);
+    int nb = get_leading_num(tb->filename);
+    if (na >= 0 && nb >= 0 && na != nb) {
+        return na - nb;
+    }
     return strcasecmp(ta->filename, tb->filename);
 }
 
@@ -127,7 +138,6 @@ void scan_directory(const char *dir_path) {
             }
         }
 
-        // Safely check if directory without depending on 32-bit stat()
         DIR *subdir = opendir(full_path);
         if (subdir) {
             closedir(subdir);
@@ -155,17 +165,19 @@ void init_hardware_and_storage() {
         return;
     }
 
-    // 2. Load SCSI storage drivers from flash
+    // 2. Load SCSI storage drivers and NLS from flash
     system("insmod /mnt/UDISK/modules/v821_compat.ko 2>/dev/null");
     system("insmod /mnt/UDISK/modules/scsi_mod.ko 2>/dev/null");
     system("insmod /mnt/UDISK/modules/sd_mod.ko 2>/dev/null");
     system("insmod /mnt/UDISK/modules/usb-storage.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/modules/nls_utf8.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/modules/nls_cp1251.ko 2>/dev/null");
 
     // 3. Mount USB storage using active /proc/partitions
     system("mkdir -p /mnt/exUDISK");
     for (int i = 0; i < 8; i++) {
         if (access("/mnt/exUDISK/Music", F_OK) == 0) break;
-        FILE *fp = popen("grep sd /proc/partitions 2>/dev/null | awk '{print $4}' | grep '[0-9]' | head -n 1", "r");
+        FILE *fp = popen("awk '/sd[a-z][0-9]/{print $4; exit}' /proc/partitions", "r");
         if (fp) {
             char part[32] = {0};
             if (fgets(part, sizeof(part), fp)) {
@@ -245,6 +257,7 @@ void *audio_playback_thread(void *arg) {
         pthread_mutex_unlock(&ctx.lock);
 
         printf("[DAP] Opening track: %s\n", track_path);
+        fflush(stdout);
         const char *ext = strrchr(track_path, '.');
 
         drflac *flac = NULL;
@@ -261,6 +274,7 @@ void *audio_playback_thread(void *arg) {
             flac = drflac_open_file(track_path, NULL);
             if (!flac) {
                 printf("[DAP] Error opening FLAC: %s\n", track_path);
+                fflush(stdout);
                 pthread_mutex_lock(&ctx.lock);
                 ctx.current_index = get_next_index();
                 pthread_mutex_unlock(&ctx.lock);
@@ -272,6 +286,7 @@ void *audio_playback_thread(void *arg) {
         } else if (ext && strcasecmp(ext, ".wav") == 0) {
             if (!drwav_init_file(&wav, track_path, NULL)) {
                 printf("[DAP] Error opening WAV: %s\n", track_path);
+                fflush(stdout);
                 pthread_mutex_lock(&ctx.lock);
                 ctx.current_index = get_next_index();
                 pthread_mutex_unlock(&ctx.lock);
@@ -284,6 +299,7 @@ void *audio_playback_thread(void *arg) {
         } else if (ext && strcasecmp(ext, ".mp3") == 0) {
             if (mp3dec_ex_open(&mp3, track_path, MP3D_SEEK_TO_SAMPLE)) {
                 printf("[DAP] Error opening MP3: %s\n", track_path);
+                fflush(stdout);
                 pthread_mutex_lock(&ctx.lock);
                 ctx.current_index = get_next_index();
                 pthread_mutex_unlock(&ctx.lock);
@@ -390,15 +406,11 @@ void *audio_playback_thread(void *arg) {
             }
 
             // Continuous Fractional Stream Resampler
-            // Playback speed modulates the step through the source audio:
-            // Slower speed = smaller step = lower pitch and slower sound!
             double effective_ratio = ((double)srate / (double)DAC_RATE) * speed;
             if (effective_ratio < 0.02) effective_ratio = 0.02;
 
-            // Frames needed in fifo to produce BUFFER_FRAMES output frames
             int needed_in_fifo = (int)(frac_pos + (double)BUFFER_FRAMES * effective_ratio) + 4;
             if (needed_in_fifo >= fifo_count) {
-                // Shift consumed frames
                 int consumed = (int)frac_pos;
                 if (consumed > 0) {
                     int remaining = fifo_count - consumed;
@@ -412,7 +424,6 @@ void *audio_playback_thread(void *arg) {
                     pthread_mutex_unlock(&ctx.lock);
                 }
 
-                // Read more frames into fifo
                 int to_read = FIFO_MAX_FRAMES - fifo_count;
                 if (to_read > 0) {
                     int actually_read = 0;
@@ -449,7 +460,6 @@ void *audio_playback_thread(void *arg) {
                     }
                     fifo_count += actually_read;
                     if (actually_read == 0 && fifo_count <= 2) {
-                        // EOF reached
                         pthread_mutex_lock(&ctx.lock);
                         ctx.current_index = get_next_index();
                         pthread_mutex_unlock(&ctx.lock);
@@ -459,7 +469,6 @@ void *audio_playback_thread(void *arg) {
                 }
             }
 
-            // Generate output buffer with linear interpolation & tape volume taper
             float vol_factor = ((float)vol / 100.0f) * (float)(speed * speed);
             for (int j = 0; j < BUFFER_FRAMES; j++) {
                 int idx0 = (int)frac_pos;
@@ -484,7 +493,6 @@ void *audio_playback_thread(void *arg) {
                 frac_pos += effective_ratio;
             }
 
-            // Write to ALSA DAC
             if (!pcm) {
                 pcm = pcm_open(0, 0, PCM_OUT, &config);
                 if (pcm && !pcm_is_ready(pcm)) {
@@ -540,6 +548,7 @@ void *tcp_server_thread(void *arg) {
 
     listen(server_fd, 5);
     printf("[DAP] Remote server listening on 0.0.0.0:%d\n", PORT);
+    fflush(stdout);
 
     char buf[1024];
     while (1) {
@@ -567,6 +576,13 @@ void *tcp_server_thread(void *arg) {
                 ctx.target_index = target;
                 ctx.tape_action = ACTION_INDEX;
                 ctx.tape_stop_requested = 1;
+                if (ctx.state != STATE_PLAYING) {
+                    ctx.state = STATE_PLAYING;
+                    ctx.current_index = target;
+                    ctx.spin_up_active = 1;
+                    ctx.tape_speed = 0.15;
+                    ctx.tape_stop_requested = 0;
+                }
                 pthread_cond_signal(&ctx.cond);
             }
             pthread_mutex_unlock(&ctx.lock);
@@ -632,8 +648,8 @@ void *tcp_server_thread(void *arg) {
             scan_directory("/mnt/UDISK");
             playlist_sort();
             pthread_mutex_lock(&ctx.lock);
-            if (ctx.count > 0 && ctx.current_index < 0) {
-                ctx.current_index = 0;
+            if (ctx.count > 0) {
+                if (ctx.current_index < 0) ctx.current_index = 0;
                 ctx.state = STATE_PLAYING;
                 ctx.spin_up_active = 1;
                 ctx.tape_speed = 0.15;
@@ -682,6 +698,7 @@ int main(int argc, char **argv) {
     signal(SIGHUP, SIG_IGN);
 
     printf("=== Allwinner V821 Autonomous Hi-Fi DAP Engine ===\n");
+    fflush(stdout);
     memset(&ctx, 0, sizeof(ctx));
     ctx.current_index = -1;
     ctx.volume = 30; // Default 30% volume as requested
@@ -720,6 +737,7 @@ int main(int argc, char **argv) {
         ctx.tape_speed = 0.15;
         pthread_cond_signal(&ctx.cond);
         printf("[DAP] Found %d tracks in storage. Autoplaying track 1.\n", ctx.count);
+        fflush(stdout);
     }
     pthread_mutex_unlock(&ctx.lock);
 
