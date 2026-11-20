@@ -1,3 +1,5 @@
+#define _FILE_OFFSET_BITS 64
+#define _LARGEFILE64_SOURCE
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,18 +90,20 @@ void scan_directory(const char *dir_path) {
         if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
         char full_path[MAX_PATH];
         snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, dir->d_name);
-        struct stat st;
-        if (stat(full_path, &st) == 0) {
-            if (S_ISDIR(st.st_mode)) {
-                scan_directory(full_path);
-            } else if (S_ISREG(st.st_mode)) {
-                const char *ext = strrchr(dir->d_name, '.');
-                if (ext) {
-                    if (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".mp3") == 0) {
-                        playlist_add(full_path);
-                    }
-                }
+
+        const char *ext = strrchr(dir->d_name, '.');
+        if (ext) {
+            if (strcasecmp(ext, ".flac") == 0 || strcasecmp(ext, ".wav") == 0 || strcasecmp(ext, ".mp3") == 0) {
+                playlist_add(full_path);
+                continue;
             }
+        }
+
+        // Check if directory by attempting opendir to bypass 32-bit stat() limitations
+        DIR *subdir = opendir(full_path);
+        if (subdir) {
+            closedir(subdir);
+            scan_directory(full_path);
         }
     }
     closedir(d);
