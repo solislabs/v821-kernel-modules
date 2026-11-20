@@ -52,6 +52,9 @@ jobs:
           echo "Building SCSI and USB storage modules..."
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=drivers/scsi modules || true
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=drivers/usb/storage modules || true
+
+          echo "Building NLS modules (UTF-8, CP1251)..."
+          make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -j$(nproc) M=fs/nls modules || true
           
           echo "Preparing v821_compat sources..."
           cp drivers/scsi/scsi_common.c "$GITHUB_WORKSPACE/v821_compat/scsi_common_impl.c"
@@ -62,7 +65,7 @@ jobs:
           make ARCH=riscv CROSS_COMPILE=$TC_PREFIX BSP_TOP="bsp/" -C "$PWD" M="$GITHUB_WORKSPACE/v821_compat" modules
           
           mkdir -p ../modules
-          find sound drivers/scsi drivers/usb/storage "$GITHUB_WORKSPACE/v821_compat" -name "*.ko" -exec cp {} ../modules/ \;
+          find sound drivers/scsi drivers/usb/storage fs/nls "$GITHUB_WORKSPACE/v821_compat" -name "*.ko" -exec cp {} ../modules/ \;
           
           echo "Patching vermagic to match stock 5.4.220..."
           python3 -c "
