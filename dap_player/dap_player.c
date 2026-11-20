@@ -113,38 +113,37 @@ void scan_directory(const char *dir_path) {
 }
 
 void init_hardware_and_storage() {
-    // If Music folder is already accessible, do not remount or touch VFS
-    if (access("/mnt/exUDISK/Music", F_OK) == 0) {
-        return;
-    }
-
     system("mount -o remount,rw,exec /mnt/UDISK 2>/dev/null");
     system("echo usb_host > /sys/devices/platform/soc@2002000/soc@2002000:usbc0@0/otg_role 2>/dev/null");
     system("cat /sys/devices/platform/soc@2002000/soc@2002000:usbc0@0/usb_host >/dev/null 2>&1");
 
-    // Load SCSI storage drivers from flash
+    // 1. Load SCSI storage drivers from flash
     system("insmod /mnt/UDISK/modules/v821_compat.ko 2>/dev/null");
     system("insmod /mnt/UDISK/modules/scsi_mod.ko 2>/dev/null");
     system("insmod /mnt/UDISK/modules/sd_mod.ko 2>/dev/null");
     system("insmod /mnt/UDISK/modules/usb-storage.ko 2>/dev/null");
 
-    system("mkdir -p /mnt/exUDISK");
-    for (int i = 0; i < 6; i++) {
-        for (char l = 'a'; l <= 'e'; l++) {
-            char dev[32];
-            snprintf(dev, sizeof(dev), "/dev/sd%c1", l);
-            if (access(dev, F_OK) == 0) {
-                char cmd[128];
-                snprintf(cmd, sizeof(cmd), "mount -t vfat -o ro %s /mnt/exUDISK 2>/dev/null || mount -o ro %s /mnt/exUDISK 2>/dev/null", dev, dev);
-                system(cmd);
-                if (access("/mnt/exUDISK/Music", F_OK) == 0) return;
-                system("umount -f /mnt/exUDISK 2>/dev/null");
+    // 2. Mount USB storage if not accessible yet
+    if (access("/mnt/exUDISK/Music", F_OK) != 0) {
+        system("mkdir -p /mnt/exUDISK");
+        for (int i = 0; i < 6; i++) {
+            for (char l = 'a'; l <= 'e'; l++) {
+                char dev[32];
+                snprintf(dev, sizeof(dev), "/dev/sd%c1", l);
+                if (access(dev, F_OK) == 0) {
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "mount -t vfat -o ro %s /mnt/exUDISK 2>/dev/null || mount -o ro %s /mnt/exUDISK 2>/dev/null", dev, dev);
+                    system(cmd);
+                    if (access("/mnt/exUDISK/Music", F_OK) == 0) break;
+                    system("umount -f /mnt/exUDISK 2>/dev/null");
+                }
             }
+            if (access("/mnt/exUDISK/Music", F_OK) == 0) break;
+            usleep(300000);
         }
-        usleep(300000);
     }
 
-    // Load Audio drivers from USB storage if mounted
+    // 3. Load Audio drivers from USB storage (ALWAYS executed, never skipped!)
     system("insmod /mnt/exUDISK/modules/soundcore.ko 2>/dev/null");
     system("insmod /mnt/exUDISK/modules/snd.ko 2>/dev/null");
     system("insmod /mnt/exUDISK/modules/snd-timer.ko 2>/dev/null");
