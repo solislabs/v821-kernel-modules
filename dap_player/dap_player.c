@@ -100,7 +100,9 @@ void scan_directory(const char *dir_path) {
         }
 
         if (strcasecmp(dir->d_name, "Music") == 0 || strcasecmp(dir->d_name, "FLAC") == 0 || strcasecmp(dir->d_name, "Audio") == 0) {
-            scan_directory(full_path);
+            if (strstr(dir_path, "Music") == NULL) {
+                scan_directory(full_path);
+            }
         }
     }
     closedir(d);
@@ -141,10 +143,19 @@ void init_hardware_and_storage() {
 
     system("mkdir -p /mnt/exUDISK");
     for (int i = 0; i < 5; i++) {
-        if (access("/dev/sda1", F_OK) == 0 || access("/dev/sda", F_OK) == 0) break;
-        usleep(400000);
+        for (char l = 'a'; l <= 'e'; l++) {
+            char dev[32];
+            snprintf(dev, sizeof(dev), "/dev/sd%c1", l);
+            if (access(dev, F_OK) == 0) {
+                char cmd[128];
+                snprintf(cmd, sizeof(cmd), "mount -t vfat %s /mnt/exUDISK 2>/dev/null || mount %s /mnt/exUDISK 2>/dev/null", dev, dev);
+                system(cmd);
+                if (access("/mnt/exUDISK/Music", F_OK) == 0) break;
+            }
+        }
+        if (access("/mnt/exUDISK/Music", F_OK) == 0) break;
+        usleep(300000);
     }
-    system("mount -t vfat /dev/sda1 /mnt/exUDISK 2>/dev/null || mount /dev/sda1 /mnt/exUDISK 2>/dev/null || mount /dev/sda /mnt/exUDISK 2>/dev/null");
 }
 
 int get_next_index() {
@@ -380,12 +391,21 @@ void *audio_playback_thread(void *arg) {
             // Apply Tape-stop & Volume
             apply_tape_stop_and_volume(dac_buffer, BUFFER_FRAMES, DAC_CHANNELS, speed, vol);
 
-            // Write to ALSA DAC
+            // Write to ALSA DAC (with hotplug / dynamic reconnection)
+            if (!pcm) {
+                pcm = pcm_open(0, 0, PCM_OUT, &config);
+                if (pcm && !pcm_is_ready(pcm)) {
+                    pcm_close(pcm);
+                    pcm = NULL;
+                }
+            }
             if (pcm) {
                 int err = pcm_writei(pcm, dac_buffer, BUFFER_FRAMES);
                 if (err < 0) {
                     pcm_prepare(pcm);
                 }
+            } else {
+                usleep(21000);
             }
 
             pthread_mutex_lock(&ctx.lock);
@@ -498,6 +518,10 @@ void *tcp_server_thread(void *arg) {
                 pthread_mutex_lock(&ctx.lock);
                 if (ctx.count > 0) {
                     ctx.current_index = 0;
+                    ctx.state = STATE_PLAYING;
+                    ctx.spin_up_active = 1;
+                    ctx.tape_speed = 0.1;
+                    pthread_cond_signal(&ctx.cond);
                 }
                 snprintf(resp, sizeof(resp), "{\"total_tracks\": %d}\n", ctx.count);
                 pthread_mutex_unlock(&ctx.lock);
@@ -545,7 +569,7 @@ int main(int argc, char **argv) {
     printf("=== Allwinner V821 Autonomous Hi-Fi DAP Engine ===\n");
     memset(&ctx, 0, sizeof(ctx));
     ctx.current_index = -1;
-    ctx.volume = 80;
+    ctx.volume = 30; // Default 30% volume as requested
     ctx.tape_speed = 1.0;
     pthread_mutex_init(&ctx.lock, NULL);
     pthread_cond_init(&ctx.cond, NULL);
@@ -570,7 +594,11 @@ int main(int argc, char **argv) {
 
     if (ctx.count > 0) {
         ctx.current_index = 0;
-        printf("[DAP] Found %d tracks in storage.\n", ctx.count);
+        ctx.state = STATE_PLAYING;
+        ctx.spin_up_active = 1;
+        ctx.tape_speed = 0.1;
+        pthread_cond_signal(&ctx.cond);
+        printf("[DAP] Found %d tracks in storage. Autoplaying track 1.\n", ctx.count);
     }
 
     pthread_join(th_audio, NULL);
