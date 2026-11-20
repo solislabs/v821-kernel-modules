@@ -201,8 +201,8 @@ void *audio_playback_thread(void *arg) {
         pcm = NULL;
     }
 
-    int16_t in_buffer[BUFFER_FRAMES * 8];
-    int16_t dac_buffer[BUFFER_FRAMES * DAC_CHANNELS];
+    static int16_t in_buffer[BUFFER_FRAMES * 8];
+    static int16_t dac_buffer[BUFFER_FRAMES * DAC_CHANNELS];
 
     while (1) {
         pthread_mutex_lock(&ctx.lock);
@@ -399,7 +399,8 @@ void *audio_playback_thread(void *arg) {
             if (pcm) {
                 int err = pcm_writei(pcm, dac_buffer, BUFFER_FRAMES);
                 if (err < 0) {
-                    pcm_prepare(pcm);
+                    pcm_close(pcm);
+                    pcm = NULL;
                 }
             } else {
                 usleep(21000);
@@ -452,6 +453,10 @@ void *tcp_server_thread(void *arg) {
     while (1) {
         int client = accept(server_fd, NULL, NULL);
         if (client < 0) continue;
+
+        struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
         ssize_t n = read(client, buf, sizeof(buf) - 1);
         if (n > 0) {
@@ -570,9 +575,13 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&ctx.lock, NULL);
     pthread_cond_init(&ctx.cond, NULL);
 
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 1024 * 1024); // 1 MB stack
     pthread_t th_audio, th_tcp;
-    pthread_create(&th_tcp, NULL, tcp_server_thread, NULL);
-    pthread_create(&th_audio, NULL, audio_playback_thread, NULL);
+    pthread_create(&th_tcp, &attr, tcp_server_thread, NULL);
+    pthread_create(&th_audio, &attr, audio_playback_thread, NULL);
+    pthread_attr_destroy(&attr);
 
     // Initialize hardware drivers & storage
     init_hardware_and_storage();
