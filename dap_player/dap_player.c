@@ -87,7 +87,10 @@ void scan_directory(const char *dir_path) {
     if (!d) return;
     struct dirent *dir;
     while ((dir = readdir(d)) != NULL) {
-        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
+        if (dir->d_name[0] == '.') continue;
+        if (strcasecmp(dir->d_name, "System Volume Information") == 0) continue;
+        if (strcasecmp(dir->d_name, "modules") == 0) continue;
+
         char full_path[MAX_PATH];
         snprintf(full_path, sizeof(full_path), "%s/%s", dir_path, dir->d_name);
 
@@ -99,63 +102,57 @@ void scan_directory(const char *dir_path) {
             }
         }
 
-        if (strcasecmp(dir->d_name, "Music") == 0 || strcasecmp(dir->d_name, "FLAC") == 0 || strcasecmp(dir->d_name, "Audio") == 0) {
-            if (strstr(dir_path, "Music") == NULL) {
-                scan_directory(full_path);
-            }
+        // Safely check if directory without depending on 32-bit stat()
+        DIR *subdir = opendir(full_path);
+        if (subdir) {
+            closedir(subdir);
+            scan_directory(full_path);
         }
     }
     closedir(d);
 }
 
 void init_hardware_and_storage() {
+    // If Music folder is already accessible, do not remount or touch VFS
+    if (access("/mnt/exUDISK/Music", F_OK) == 0) {
+        return;
+    }
+
     system("mount -o remount,rw,exec /mnt/UDISK 2>/dev/null");
     system("echo usb_host > /sys/devices/platform/soc@2002000/soc@2002000:usbc0@0/otg_role 2>/dev/null");
     system("cat /sys/devices/platform/soc@2002000/soc@2002000:usbc0@0/usb_host >/dev/null 2>&1");
 
-    system("insmod /etc/v821_compat.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/v821_compat.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/soundcore.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/snd.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/snd-timer.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/snd-pcm.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/snd-hwdep.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/snd-rawmidi.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/snd-usbmidi-lib.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/snd-usb-audio.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/scsi_mod.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/sd_mod.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/sg.ko 2>/dev/null");
-    system("insmod /mnt/UDISK/usb-storage.ko 2>/dev/null");
-
-    system("insmod /tmp/modules/soundcore.ko 2>/dev/null");
-    system("insmod /tmp/modules/snd.ko 2>/dev/null");
-    system("insmod /tmp/modules/snd-timer.ko 2>/dev/null");
-    system("insmod /tmp/modules/snd-pcm.ko 2>/dev/null");
-    system("insmod /tmp/modules/snd-hwdep.ko 2>/dev/null");
-    system("insmod /tmp/modules/snd-rawmidi.ko 2>/dev/null");
-    system("insmod /tmp/modules/snd-usbmidi-lib.ko 2>/dev/null");
-    system("insmod /tmp/modules/snd-usb-audio.ko 2>/dev/null");
-    system("insmod /tmp/modules/scsi_mod.ko 2>/dev/null");
-    system("insmod /tmp/modules/sd_mod.ko 2>/dev/null");
-    system("insmod /tmp/modules/sg.ko 2>/dev/null");
-    system("insmod /tmp/modules/usb-storage.ko 2>/dev/null");
+    // Load SCSI storage drivers from flash
+    system("insmod /mnt/UDISK/modules/v821_compat.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/modules/scsi_mod.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/modules/sd_mod.ko 2>/dev/null");
+    system("insmod /mnt/UDISK/modules/usb-storage.ko 2>/dev/null");
 
     system("mkdir -p /mnt/exUDISK");
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 6; i++) {
         for (char l = 'a'; l <= 'e'; l++) {
             char dev[32];
             snprintf(dev, sizeof(dev), "/dev/sd%c1", l);
             if (access(dev, F_OK) == 0) {
                 char cmd[128];
-                snprintf(cmd, sizeof(cmd), "mount -t vfat %s /mnt/exUDISK 2>/dev/null || mount %s /mnt/exUDISK 2>/dev/null", dev, dev);
+                snprintf(cmd, sizeof(cmd), "mount -t vfat -o ro %s /mnt/exUDISK 2>/dev/null || mount -o ro %s /mnt/exUDISK 2>/dev/null", dev, dev);
                 system(cmd);
-                if (access("/mnt/exUDISK/Music", F_OK) == 0) break;
+                if (access("/mnt/exUDISK/Music", F_OK) == 0) return;
+                system("umount -f /mnt/exUDISK 2>/dev/null");
             }
         }
-        if (access("/mnt/exUDISK/Music", F_OK) == 0) break;
         usleep(300000);
     }
+
+    // Load Audio drivers from USB storage if mounted
+    system("insmod /mnt/exUDISK/modules/soundcore.ko 2>/dev/null");
+    system("insmod /mnt/exUDISK/modules/snd.ko 2>/dev/null");
+    system("insmod /mnt/exUDISK/modules/snd-timer.ko 2>/dev/null");
+    system("insmod /mnt/exUDISK/modules/snd-pcm.ko 2>/dev/null");
+    system("insmod /mnt/exUDISK/modules/snd-hwdep.ko 2>/dev/null");
+    system("insmod /mnt/exUDISK/modules/snd-rawmidi.ko 2>/dev/null");
+    system("insmod /mnt/exUDISK/modules/snd-usbmidi-lib.ko 2>/dev/null");
+    system("insmod /mnt/exUDISK/modules/snd-usb-audio.ko 2>/dev/null");
 }
 
 int get_next_index() {
@@ -512,11 +509,10 @@ void *tcp_server_thread(void *arg) {
             } else if (strncmp(buf, "SCAN", 4) == 0) {
                 init_hardware_and_storage();
                 playlist_clear();
-                scan_directory("/mnt/exUDISK/Music");
                 scan_directory("/mnt/exUDISK");
                 scan_directory("/mnt/UDISK");
                 pthread_mutex_lock(&ctx.lock);
-                if (ctx.count > 0) {
+                if (ctx.count > 0 && ctx.current_index < 0) {
                     ctx.current_index = 0;
                     ctx.state = STATE_PLAYING;
                     ctx.spin_up_active = 1;
@@ -582,7 +578,6 @@ int main(int argc, char **argv) {
     init_hardware_and_storage();
 
     // Initial scan of internal and external storage
-    scan_directory("/mnt/exUDISK/Music");
     scan_directory("/mnt/exUDISK");
     scan_directory("/mnt/UDISK");
 
@@ -592,6 +587,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    pthread_mutex_lock(&ctx.lock);
     if (ctx.count > 0) {
         ctx.current_index = 0;
         ctx.state = STATE_PLAYING;
@@ -600,6 +596,7 @@ int main(int argc, char **argv) {
         pthread_cond_signal(&ctx.cond);
         printf("[DAP] Found %d tracks in storage. Autoplaying track 1.\n", ctx.count);
     }
+    pthread_mutex_unlock(&ctx.lock);
 
     pthread_join(th_audio, NULL);
     pthread_join(th_tcp, NULL);
