@@ -99,9 +99,7 @@ void scan_directory(const char *dir_path) {
             }
         }
 
-        DIR *subdir = opendir(full_path);
-        if (subdir) {
-            closedir(subdir);
+        if (strcasecmp(dir->d_name, "Music") == 0 || strcasecmp(dir->d_name, "FLAC") == 0 || strcasecmp(dir->d_name, "Audio") == 0) {
             scan_directory(full_path);
         }
     }
@@ -494,6 +492,7 @@ void *tcp_server_thread(void *arg) {
             } else if (strncmp(buf, "SCAN", 4) == 0) {
                 init_hardware_and_storage();
                 playlist_clear();
+                scan_directory("/mnt/exUDISK/Music");
                 scan_directory("/mnt/exUDISK");
                 scan_directory("/mnt/UDISK");
                 pthread_mutex_lock(&ctx.lock);
@@ -559,6 +558,7 @@ int main(int argc, char **argv) {
     init_hardware_and_storage();
 
     // Initial scan of internal and external storage
+    scan_directory("/mnt/exUDISK/Music");
     scan_directory("/mnt/exUDISK");
     scan_directory("/mnt/UDISK");
 
