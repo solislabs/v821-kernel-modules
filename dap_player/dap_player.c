@@ -99,8 +99,9 @@ void scan_directory(const char *dir_path) {
             }
         }
 
-        struct stat st;
-        if (stat(full_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+        DIR *subdir = opendir(full_path);
+        if (subdir) {
+            closedir(subdir);
             scan_directory(full_path);
         }
     }
@@ -416,7 +417,15 @@ void *tcp_server_thread(void *arg) {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(PORT);
 
-    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    int bound = 0;
+    for (int retry = 0; retry < 15; retry++) {
+        if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+            bound = 1;
+            break;
+        }
+        usleep(500000);
+    }
+    if (!bound) {
         close(server_fd);
         return NULL;
     }
